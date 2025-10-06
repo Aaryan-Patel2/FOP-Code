@@ -1,0 +1,104 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# PyCharm/VSCode settings
+.idea/
+.vscode/
+
+# Data, models, and results
+data/
+datasets/
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.npz
+*.npy
+*.db
+*.sqlite
+*.jsonl
+*.parquet
+*.feather
+*.sav
+*.rds
+*.mat
+
+# Model files and outputs
+models/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.joblib
+*.onnx
+*.pb
+*.tflite
+
+# Sensitive information
+*.key
+*.pem
+*.crt
+*.env
+.env.*
+secrets/
+config.yaml
+config.json
+credentials.json
+apikeys.json
+token.json
+
+# Logs and outputs
+*.log
+logs/
+output/
+results/
+runs/
+wandb/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# System files
+.DS_Store
+Thumbs.db
