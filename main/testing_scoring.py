@@ -1,55 +1,85 @@
 import pandas as pd
 import os
+import sys
 import glob
+
+
+# Mutant score is trash, specificity is pretty reasonable (obv. since it comes from Vina), affinity is okay
+# GOAL: Use affinity-designed models to then rearrange and get K_d
+
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
 from models.utils.scoring import *
 from utils.parse_vina import * 
 
 # Set up paths
-base_dir = os.path.dirname(os.path.dirname(__file__))  # Go up to FOP-Code directory
+base_dir = os.path.dirname(os.path.dirname(__file__))
 ligands_dir = os.path.join(base_dir, 'data', 'converted_ligands')
-receptors_dir = os.path.join(base_dir, 'data', 'converted_structures')
+docking_results_dir = os.path.join(base_dir, 'docking_results')
 
-# Get all ligand files (pdbqt and other formats)
-ligand_files = glob.glob(os.path.join(ligands_dir, 'ligand_*.*'))
-ligand_files.sort(key=lambda x: int(os.path.basename(x).split('_')[1].split('.')[0]))
+# Get ACTUAL docking result files (not expected ones)
+mutant_files = glob.glob(os.path.join(docking_results_dir, "mutant_docked_*.pdbqt"))
+wt_files = glob.glob(os.path.join(docking_results_dir, "wildtype_docked_*.pdbqt"))
 
-# Define receptor files
-mutant_receptor = os.path.join(receptors_dir, 'acvr1_mutant_3mtf.pdbqt')
-wt_receptor = os.path.join(receptors_dir, 'acvr1_wt_3mtf.pdbqt')
+print(f"Found {len(mutant_files)} mutant docking results")
+print(f"Found {len(wt_files)} wildtype docking results")
 
-print(f"Found {len(ligand_files)} ligand files")
-print(f"Mutant receptor: {mutant_receptor}")
-print(f"Wildtype receptor: {wt_receptor}")
-
-# Your docking results
+# Process only the ligands that actually docked successfully
 results = []
-for ligand_file in ligand_files:
+for mutant_file in mutant_files:
     # Extract ligand number from filename
-    ligand_name = os.path.basename(ligand_file)
-    ligand_num = ligand_name.split('_')[1].split('.')[0]
+    ligand_num = os.path.basename(mutant_file).split('_')[2].split('.')[0]
+    wt_file = os.path.join(docking_results_dir, f"wildtype_docked_{ligand_num}.pdbqt")
     
-    # For now, we're parsing pre-docked results
-    # Assuming docked files are named: mutant_docked_{i}.pdbqt and wildtype_docked_{i}.pdbqt
-    mutant_docked = os.path.join(base_dir, f"mutant_docked_{ligand_num}.pdbqt")
-    wt_docked = os.path.join(base_dir, f"wildtype_docked_{ligand_num}.pdbqt")
-    
-    mutant_score = parse_vina_score(mutant_docked)
-    wt_score = parse_vina_score(wt_docked)
-    
-    # USE YOUR CORRECTED SCORING FUNCTION:
-    total_score = calculate_temporary_inhibition_score(mutant_score, wt_score)
-    
-    results.append({
-        'molecule': f'ligand_{ligand_num}',
-        'ligand_file': ligand_name,
-        'mutant_score': mutant_score,
-        'wt_score': wt_score, 
-        'specificity': wt_score - mutant_score,
-        'total_score': total_score
-    })
+    # Check if wildtype result also exists
+    if os.path.exists(wt_file):
+        mutant_score = parse_vina_score(mutant_file)
+        wt_score = parse_vina_score(wt_file)
+        
+        # SANITY CHECK: Skip impossible scores
+        if -15 < mutant_score < 0 and -15 < wt_score < 0:
+            total_score = calculate_temporary_inhibition_score(mutant_score, wt_score)
+            
+            results.append({
+                'molecule': f'ligand_{ligand_num}',
+                'mutant_score': mutant_score,
+                'wt_score': wt_score, 
+                'specificity': wt_score - mutant_score,
+                'total_score': total_score
+            })
+        else:
+            print(f"SKIPPING ligand_{ligand_num}: Impossible scores (mutant: {mutant_score}, wt: {wt_score})")
 
 # Find best candidates
-df = pd.DataFrame(results)
-best_molecules = df.nlargest(5, 'total_score')
-print("TOP 5 CANDIDATES:")
-print(best_molecules)
+if results:
+    df = pd.DataFrame(results)
+    
+    # Filter out garbage scores before ranking
+    reasonable_df = df[(df['mutant_score'] > -15) & (df['mutant_score'] < 0) & 
+                       (df['wt_score'] > -15) & (df['wt_score'] < 0)]
+    
+    if len(reasonable_df) > 0:
+        best_molecules = reasonable_df.nlargest(5, 'total_score')
+        print("\n" + "="*50)
+        print("TOP 5 REASONABLE CANDIDATES:")
+        print("="*50)
+        print(best_molecules)
+        
+        # Save full results
+        output_csv = os.path.join(base_dir, 'docking_scores_clean.csv')
+        reasonable_df.to_csv(output_csv, index=False)
+        print(f"\nClean results saved to: {output_csv}")
+        
+        # Show molecules with good temporary inhibition potential
+        good_candidates = reasonable_df[(reasonable_df['specificity'] > 0.5) & 
+                                      (reasonable_df['mutant_score'] > -9.0) & 
+                                      (reasonable_df['mutant_score'] < -6.0)]
+        print(f"\nMolecules with good temporary inhibition potential: {len(good_candidates)}")
+        if len(good_candidates) > 0:
+            print(good_candidates[['molecule', 'mutant_score', 'specificity', 'total_score']])
+    else:
+        print("No reasonable docking scores found!")
+else:
+    print("No successful docking results to analyze!")
