@@ -61,7 +61,6 @@ datasets/
 *.mat
 
 # Model files and outputs
-models/
 checkpoints/
 *.pt
 *.pth
