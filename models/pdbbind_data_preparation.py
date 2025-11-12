@@ -14,7 +14,7 @@ Features extracted:
 import pandas as pd
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import AllChem, Descriptors
+from rdkit.Chem import AllChem, Descriptors, rdFingerprintGenerator
 import os
 import json
 from typing import Dict, List, Tuple, Optional
@@ -155,8 +155,9 @@ class ComplexDescriptorCalculator:
                 Descriptors.qed(mol),  # type: ignore
             ]
             
-            # Generate Morgan fingerprint (circular)
-            fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=185)  # type: ignore
+            # Generate Morgan fingerprint (circular) using new API
+            mgen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=185)
+            fp = mgen.GetFingerprint(mol)
             fp_array = np.array(fp)
             
             # Combine all features
@@ -216,7 +217,7 @@ class PDBBindDataPreparator:
                    'PDB ID(s) for Ligand-Target Complex', 'Curation/DataSource']
         
         df = pd.read_csv(bindingdb_path, sep='\t', usecols=usecols, 
-                         low_memory=False, nrows=50000)  # Limit for memory
+                         low_memory=False, nrows=50000, compression=None)  # Limit for memory, disable compression
         
         print(f"Loaded {len(df)} entries")
         
@@ -240,9 +241,10 @@ class PDBBindDataPreparator:
             else:
                 return np.nan, None
         
-        df[['affinity_nM', 'affinity_type']] = df.apply(
-            lambda row: pd.Series(get_best_affinity(row)), axis=1
-        )
+        # Apply function and properly expand results
+        affinity_results = df.apply(get_best_affinity, axis=1, result_type='expand')
+        df['affinity_nM'] = pd.to_numeric(affinity_results[0], errors='coerce')
+        df['affinity_type'] = affinity_results[1]
         
         df = df.dropna(subset=['affinity_nM'])
         print(f"Entries with valid affinity: {len(df)}")
@@ -339,11 +341,16 @@ class PDBBindDataPreparator:
         complex_descs = np.stack([d['complex_descriptors'] for d in processed_data])
         affinities = np.array([d['pKd'] for d in processed_data], dtype=np.float32)
         
+        # Normalize targets to [0, 1] range for better training stability
+        affinity_min = affinities.min()
+        affinity_max = affinities.max()
+        affinities_normalized = (affinities - affinity_min) / (affinity_max - affinity_min)
+        
         # Save as numpy arrays
         np.save(os.path.join(output_dir, f'{dataset_name}_protein_sequences.npy'), protein_seqs)
         np.save(os.path.join(output_dir, f'{dataset_name}_ligand_smiles.npy'), smiles_encoded)
         np.save(os.path.join(output_dir, f'{dataset_name}_complex_descriptors.npy'), complex_descs)
-        np.save(os.path.join(output_dir, f'{dataset_name}_affinities.npy'), affinities)
+        np.save(os.path.join(output_dir, f'{dataset_name}_affinities.npy'), affinities_normalized)
         
         # Save metadata
         metadata_df = pd.DataFrame([{
@@ -369,6 +376,11 @@ class PDBBindDataPreparator:
                 'min': float(metadata_df['pKd'].min()),
                 'max': float(metadata_df['pKd'].max()),
                 'mean': float(metadata_df['pKd'].mean()),
+            },
+            'normalization': {
+                'affinity_min': float(affinity_min),
+                'affinity_max': float(affinity_max),
+                'method': 'min-max to [0, 1]'
             },
             'affinity_types': metadata_df['affinity_type'].value_counts().to_dict(),
             'protein_seq_shape': protein_seqs.shape,

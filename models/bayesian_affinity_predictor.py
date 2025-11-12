@@ -394,10 +394,13 @@ class BayesianAffinityLoss(nn.Module):
             metrics: Dictionary with loss components
         """
         # Negative log-likelihood (reconstruction loss)
-        nll = F.mse_loss(predictions, targets, reduction='sum')
+        # Use 'mean' reduction to avoid scaling with batch size
+        nll = F.mse_loss(predictions, targets, reduction='mean')
         
-        # KL divergence scaled by dataset size (to get proper ELBO)
-        kl_scaled = kl_divergence / self.dataset_size
+        # KL divergence averaged by batch size for stability
+        # This makes the KL term comparable in scale to the NLL term
+        batch_size = predictions.size(0)
+        kl_scaled = kl_divergence / batch_size
         
         # Total ELBO loss
         total_loss = nll + self.kl_weight * kl_scaled

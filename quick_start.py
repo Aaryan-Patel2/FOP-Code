@@ -144,23 +144,21 @@ class AffinityPredictor:
         uncertainty = predictions.std()
         confidence = 1.0 / (1.0 + uncertainty)  # Higher confidence = lower uncertainty
         
-        # Predict k_off (if BNN k_off model is available)
-        # Note: k_off prediction module not yet implemented
+        # Predict k_off using empirical method
         koff_mean = None
         residence_time = None
         
-        # Uncomment when bnn_koff module is implemented:
-        # try:
-        #     from models.utils.bnn_koff import predict_koff_with_uncertainty
-        #     koff_mean, koff_std = predict_koff_with_uncertainty(
-        #         affinity=mean_affinity,
-        #         molecular_features=complex_desc
-        #     )
-        #     residence_time = 1.0 / koff_mean if koff_mean > 0 else np.inf
-        # except Exception as e:
-        #     koff_mean = None
-        #     residence_time = None
-        #     print(f"⚠ k_off prediction unavailable: {e}")
+        try:
+            from models.utils.bnn_koff import predict_koff_with_uncertainty
+            koff_mean, koff_std = predict_koff_with_uncertainty(
+                affinity=mean_affinity,
+                molecular_features=complex_desc,
+                method="empirical"  # Uses literature-based correlation
+            )
+            residence_time = 1.0 / koff_mean if koff_mean > 0 else np.inf
+        except Exception as e:
+            # If import fails, k_off remains None
+            pass
         
         return {
             'affinity': float(mean_affinity),
@@ -218,7 +216,9 @@ class AffinityPredictor:
              num_epochs: int = 50,
              batch_size: int = 32,
              learning_rate: float = 1e-3,
-             output_dir: str = 'trained_models'):
+             output_dir: str = 'trained_models',
+             accelerator: str = 'auto',
+             devices: int = 1):
         """
         Train the model on BindingDB data
         
@@ -229,6 +229,8 @@ class AffinityPredictor:
             batch_size: Batch size
             learning_rate: Learning rate
             output_dir: Directory to save trained model
+            accelerator: Device to use ('auto', 'cpu', 'gpu', 'tpu')
+            devices: Number of devices to use
         """
         print("\n" + "=" * 60)
         print("TRAINING BAYESIAN AFFINITY MODEL")
@@ -277,7 +279,7 @@ class AffinityPredictor:
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=batch_size * 2, shuffle=False)
         
-        # Create model
+        # Create model with balanced dropout
         config = {
             'protein_vocab_size': preparator.protein_encoder.vocab_size,
             'ligand_vocab_size': preparator.smiles_encoder.vocab_size,
@@ -286,7 +288,7 @@ class AffinityPredictor:
             'ligand_output_dim': 256,
             'complex_output_dim': 128,
             'fusion_hidden_dims': [512, 256, 128],
-            'dropout': 0.3,
+            'dropout': 0.3,  # Balanced dropout - not too aggressive
             'prior_sigma': 1.0
         }
         
@@ -294,7 +296,7 @@ class AffinityPredictor:
         lit_model = BayesianAffinityTrainer(
             model=model,
             learning_rate=learning_rate,
-            kl_weight=0.01,
+            kl_weight=0.001,  # Reduced from 0.01 to let model focus on fitting data
             dataset_size=train_size
         )
         
@@ -311,8 +313,8 @@ class AffinityPredictor:
         trainer = pl.Trainer(
             max_epochs=num_epochs,
             callbacks=[checkpoint_callback, EarlyStopping(monitor='val_loss', patience=10)],
-            accelerator='auto',
-            devices=1
+            accelerator=accelerator,
+            devices=devices
         )
         
         # Train

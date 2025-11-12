@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem, Descriptors, Descriptors3D, rdDistGeom, rdForceFieldHelpers
-from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdMolDescriptors, rdFingerprintGenerator
 import os
 import json
 from typing import Dict, List, Tuple, Optional
@@ -203,7 +203,9 @@ class AffinityDataPreparator:
             if mol is None:
                 return None
             
-            fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=nBits)  # type: ignore
+            # Use new MorganGenerator API to avoid deprecation warning
+            mgen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=nBits)
+            fp = mgen.GetFingerprint(mol)
             return np.array(fp)
         except:
             return None

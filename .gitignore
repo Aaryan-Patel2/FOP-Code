@@ -25,11 +25,13 @@ var/
 
 # Virtual environments
 venv/
+venv_new/
 ENV/
 env/
 .venv/
 env.bak/
 venv.bak/
+.python-version
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
@@ -39,29 +41,36 @@ venv.bak/
 .vscode/
 
 # Data, models, and results
-data/
+# Large datasets (download separately)
+data/bindingdb_data/BindingDB_All.tsv
+data/bindingdb_data/*.zip
+data/bindingdb_data/*.tar.gz
+
+# Processed data output directories
+data/quick_start_processed/
+data/pdbbind_processed/
+data/temp/
+
+# Generic large data patterns
 datasets/
-*.csv
-*.tsv
-*.xlsx
-*.xls
 *.h5
 *.hdf5
-*.pkl
-*.pickle
-*.npz
-*.npy
 *.db
 *.sqlite
-*.jsonl
 *.parquet
 *.feather
 *.sav
 *.rds
 *.mat
 
-# Model files and outputs
+# Allow example/small data files (specific exceptions)
+!data/processed_ligands_test/*.csv
+!data/processed_ligands_test/*.npy
+!data/initial_SMILES/*.txt
+
+# Model checkpoints (except example models)
 checkpoints/
+trained_models/
 *.pt
 *.pth
 *.ckpt
@@ -69,12 +78,15 @@ checkpoints/
 *.onnx
 *.pb
 *.tflite
+# Allow pre-trained example model (if you add one)
+!models/pretrained_example.ckpt
 
 # Sensitive information
 *.key
 *.pem
 *.crt
 *.env
+.env
 .env.*
 secrets/
 config.yaml
@@ -82,14 +94,20 @@ config.json
 credentials.json
 apikeys.json
 token.json
+gcloud_credentials.json
+service-account.json
+*-key.json
 
 # Logs and outputs
 *.log
 logs/
+lightning_logs/
 output/
 results/
 runs/
 wandb/
+mlruns/
+tb_logs/
 
 # Temporary files
 *.tmp
@@ -101,3 +119,30 @@ wandb/
 # System files
 .DS_Store
 Thumbs.db
+*.lnk
+
+# Google Cloud / TPU specific
+.gcloud/
+*.tfrecord
+*.tfevents.*
+
+# Editor backup files
+*~
+\#*\#
+.\#*
+
+# Coverage reports
+.coverage
+htmlcov/
+.pytest_cache/
+coverage.xml
+*.cover
+
+# Profiling data
+*.prof
+*.lprof
+
+# Database files
+*.db-journal
+*.db-shm
+*.db-wal

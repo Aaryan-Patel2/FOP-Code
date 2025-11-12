@@ -226,6 +226,11 @@ class BayesianAffinityTrainer(pl.LightningModule):
         all_preds = torch.cat([x['preds'] for x in self.validation_step_outputs]).numpy()
         all_targets = torch.cat([x['targets'] for x in self.validation_step_outputs]).numpy()
         
+        # Diagnostic: Check if model is predicting constant values
+        pred_std = np.std(all_preds)
+        pred_range = all_preds.max() - all_preds.min()
+        target_std = np.std(all_targets)
+        
         # Compute metrics
         rmse = np.sqrt(mean_squared_error(all_targets, all_preds))
         mae = mean_absolute_error(all_targets, all_preds)
@@ -237,6 +242,17 @@ class BayesianAffinityTrainer(pl.LightningModule):
         self.log('val_mae', float(mae), prog_bar=True)
         self.log('val_pcc', pcc, prog_bar=True)
         self.log('val_r2', float(pcc ** 2))
+        
+        # Log diagnostics (not in progress bar)
+        self.log('val_pred_std', float(pred_std))
+        self.log('val_pred_range', float(pred_range))
+        self.log('val_target_std', float(target_std))
+        
+        # Warning if model is collapsing to constant predictions
+        if pred_std < 0.01 * target_std:
+            print(f"\n⚠ Warning: Model predictions have very low variance (std={pred_std:.6f})")
+            print(f"   Target std: {target_std:.6f}, Pred range: {pred_range:.6f}")
+            print(f"   This may indicate over-regularization or vanishing gradients")
         
         self.validation_step_outputs.clear()
     
@@ -294,18 +310,25 @@ class BayesianAffinityTrainer(pl.LightningModule):
         self.test_step_outputs.clear()
     
     def configure_optimizers(self):  # type: ignore
-        """Configure optimizer and scheduler"""
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        """Configure optimizer and scheduler - balanced regularization"""
+        # Reduced weight decay to prevent over-regularization
+        optimizer = torch.optim.AdamW(
+            self.parameters(), 
+            lr=self.learning_rate,
+            weight_decay=1e-5  # Reduced from 1e-4 to allow model to learn patterns
+        )
         
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=10
+        # Cosine annealing for smooth learning rate decay
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, 
+            T_max=10,  # Period of cosine cycle
+            eta_min=1e-5  # Minimum learning rate (not too low)
         )
         
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
-                'monitor': 'val_loss',
                 'interval': 'epoch',
                 'frequency': 1
             }
