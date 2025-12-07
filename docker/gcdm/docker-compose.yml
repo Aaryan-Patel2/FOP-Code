@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  gcdm-sbdd:
+    platform: linux/amd64  # Force x86_64 architecture
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gcdm-sbdd:latest
+    container_name: fop-gcdm-sbdd
+    
+    # GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    
+    # Mount volumes
+    volumes:
+      # Mount FOP-Code project data
+      - ../../data:/workspace/fop-data:ro
+      # Mount output directory
+      - ../../generated_molecules:/workspace/fop-output:rw
+      # Mount models directory for checkpoint access
+      - ../../trained_models:/workspace/fop-models:ro
+    
+    # Expose API port
+    ports:
+      - "5000:5000"
+    
+    # Environment variables
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONUNBUFFERED=1
+    
+    # Keep container running
+    stdin_open: true
+    tty: true
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

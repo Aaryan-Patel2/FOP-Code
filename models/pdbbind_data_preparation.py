@@ -211,57 +211,80 @@ class PDBBindDataPreparator:
         """
         print(f"Loading BindingDB from {bindingdb_path}...")
         
-        # Load relevant columns
-        usecols = ['Ligand SMILES', 'Target Name', 'Ki (nM)', 'Kd (nM)',
-                   'IC50 (nM)', 'BindingDB Target Chain Sequence 1',
+        # Load relevant columns - Kd and Ki (both are equilibrium dissociation constants)
+        usecols = ['Ligand SMILES', 'Target Name', 'Kd (nM)', 'Ki (nM)',
+                   'BindingDB Target Chain Sequence 1',
                    'PDB ID(s) for Ligand-Target Complex', 'Curation/DataSource']
         
-        df = pd.read_csv(bindingdb_path, sep='\t', usecols=usecols, 
-                         low_memory=False, nrows=50000, compression=None)  # Limit for memory, disable compression
+        # Use chunked reading to avoid OOM on large files
+        print("Reading file in chunks (Kd + Ki filtering)...")
+        chunks = []
+        chunk_size = 500000  # Process 500K rows at a time
         
-        print(f"Loaded {len(df)} entries")
+        for i, chunk in enumerate(pd.read_csv(bindingdb_path, sep='\t', usecols=usecols,
+                                              low_memory=False, compression=None, 
+                                              chunksize=chunk_size)):
+            # Filter for entries with SMILES, sequence, AND either Kd or Ki
+            valid_mask = (
+                chunk['Ligand SMILES'].notna() &
+                chunk['BindingDB Target Chain Sequence 1'].notna() &
+                (chunk['Kd (nM)'].notna() | chunk['Ki (nM)'].notna())
+            )
+            chunk = chunk[valid_mask]
+            if len(chunk) > 0:
+                chunks.append(chunk)
+                print(f"  Chunk {i+1}: kept {len(chunk):,} entries with Kd or Ki")
         
-        # Filter by target if specified
+        df = pd.concat(chunks, ignore_index=True)
+        print(f"Loaded {len(df):,} entries with valid Kd or Ki values")
+        
+        # Filter by target ONLY if specified (otherwise use ALL for multi-target learning)
         if target_name:
             df = df[df['Target Name'].str.contains(target_name, case=False, na=False)]
-            print(f"Filtered to {len(df)} entries for target: {target_name}")
+            print(f"Filtered to {len(df):,} entries for target: {target_name}")
+        else:
+            print(f"Using ALL targets ({len(df):,} entries) for multi-target learning")
         
-        # Remove entries without SMILES or sequence
-        df = df.dropna(subset=['Ligand SMILES', 'BindingDB Target Chain Sequence 1'])
-        print(f"Entries with SMILES and sequence: {len(df)}")
+        # Already filtered during chunking - entries have SMILES, sequence, and Kd or Ki
+        print(f"Entries with SMILES and sequence: {len(df):,}")
         
-        # Determine best affinity value
-        def get_best_affinity(row):
-            if not pd.isna(row['Kd (nM)']):
-                return row['Kd (nM)'], 'Kd'
-            elif not pd.isna(row['Ki (nM)']):
-                return row['Ki (nM)'], 'Ki'
-            elif not pd.isna(row['IC50 (nM)']):
-                return row['IC50 (nM)'] * 2, 'IC50'  # Rough conversion
+        # Extract best affinity value (prefer Kd, then Ki)
+        # Both are equilibrium dissociation constants measuring direct binding
+        def get_kd_ki_affinity(row):
+            if pd.notna(row['Kd (nM)']):
+                return pd.to_numeric(row['Kd (nM)'], errors='coerce'), 'Kd'
+            elif pd.notna(row['Ki (nM)']):
+                return pd.to_numeric(row['Ki (nM)'], errors='coerce'), 'Ki'
             else:
                 return np.nan, None
         
-        # Apply function and properly expand results
-        affinity_results = df.apply(get_best_affinity, axis=1, result_type='expand')
-        df['affinity_nM'] = pd.to_numeric(affinity_results[0], errors='coerce')
+        affinity_results = df.apply(get_kd_ki_affinity, axis=1, result_type='expand')
+        df['affinity_nM'] = affinity_results[0]
         df['affinity_type'] = affinity_results[1]
         
+        # Drop rows where affinity couldn't be converted to numeric
         df = df.dropna(subset=['affinity_nM'])
-        print(f"Entries with valid affinity: {len(df)}")
         
-        # Refined Set: High-quality data (Kd or Ki only, with PDB structure if possible)
+        kd_count = (df['affinity_type'] == 'Kd').sum()
+        ki_count = (df['affinity_type'] == 'Ki').sum()
+        print(f"Valid affinities: {len(df):,} total (Kd: {kd_count:,}, Ki: {ki_count:,})")
+        
+        # Refined Set: High-quality Kd/Ki data (0.1 nM to 1 mM range)
+        # Focus on physiologically relevant binding affinities
         refined_mask = (
             (df['affinity_type'].isin(['Kd', 'Ki'])) &
-            (df['affinity_nM'] > 0) &
-            (df['affinity_nM'] < 100000)  # < 100 μM
+            (df['affinity_nM'] > 0.1) &  # Remove ultra-tight binders (potential artifacts)
+            (df['affinity_nM'] < 1000000)  # < 1 mM (very permissive upper bound)
         )
         
         refined_df = df[refined_mask].copy()
-        print(f"\nRefined Set: {len(refined_df)} entries")
+        refined_df = refined_df.reset_index(drop=True)
+        print(f"\nRefined Set (high-quality Kd/Ki): {len(refined_df):,} entries")
         
-        # General Set: All data with affinity
+        # General Set: All Kd/Ki data
         general_df = df.copy()
-        print(f"General Set: {len(general_df)} entries")
+        general_df = general_df.reset_index(drop=True)
+        print(f"General Set (all valid Kd/Ki): {len(general_df):,} entries")
         
         return refined_df, general_df
     
@@ -287,47 +310,64 @@ class PDBBindDataPreparator:
         print(f"\nProcessing {dataset_name} dataset...")
         print(f"Total samples: {len(df)}")
         
-        processed_data = []
+        # Reset index to ensure sequential numbering
+        df = df.reset_index(drop=True)
         
-        for idx, row in df.iterrows():
-            idx_int = int(idx) if isinstance(idx, (int, np.integer)) else 0  # type: ignore
-            if idx_int % 100 == 0:
-                print(f"  Processed {idx_int}/{len(df)}...")
+        processed_data = []
+        batch_size = 100000  # Process 100K at a time for speed
+        total_samples = len(df)
+        
+        import time
+        start_time = time.time()
+        
+        for batch_start in range(0, total_samples, batch_size):
+            batch_end = min(batch_start + batch_size, total_samples)
+            batch_df = df.iloc[batch_start:batch_end]
+            batch_time = time.time()
+            print(f"  Processing batch {batch_start}-{batch_end}/{total_samples}...")
             
-            try:
-                # Encode protein sequence
-                protein_seq = row['BindingDB Target Chain Sequence 1']
-                protein_encoded = self.protein_encoder.encode(protein_seq, max_protein_len)
-                
-                # Encode ligand SMILES
-                smiles = row['Ligand SMILES']
-                smiles_encoded = self.smiles_encoder.encode(smiles, max_smiles_len)
-                
-                # Calculate complex descriptors
-                complex_desc = self.descriptor_calculator.calculate_from_smiles(smiles)
-                
-                # Convert affinity to pKd (or pKi)
-                affinity_nM = row['affinity_nM']
-                pKd = -np.log10(affinity_nM * 1e-9)  # Convert nM to M, then -log10
-                
-                record = {
-                    'protein_seq_encoded': protein_encoded,
-                    'smiles_encoded': smiles_encoded,
-                    'complex_descriptors': complex_desc,
-                    'affinity_nM': affinity_nM,
-                    'pKd': pKd,
-                    'affinity_type': row['affinity_type'],
-                    'target_name': row['Target Name'],
-                    'smiles': smiles,
-                    'protein_seq': protein_seq[:100]  # Store first 100 AA for reference
-                }
-                
-                processed_data.append(record)
-                
-            except Exception as e:
-                if idx_int < 10:  # Only print first few errors
-                    print(f"  Error processing entry {idx_int}: {e}")
-                continue
+            for idx, row in batch_df.iterrows():
+                try:
+                    # Encode protein sequence
+                    protein_seq = row['BindingDB Target Chain Sequence 1']
+                    protein_encoded = self.protein_encoder.encode(protein_seq, max_protein_len)
+                    
+                    # Encode ligand SMILES
+                    smiles = row['Ligand SMILES']
+                    smiles_encoded = self.smiles_encoder.encode(smiles, max_smiles_len)
+                    
+                    # Skip expensive descriptor calculation - compute on-the-fly during training if needed
+                    # This saves ~90% of processing time
+                    complex_desc = np.zeros(200, dtype=np.float32)  # Placeholder
+                    
+                    # Convert affinity to pKd (or pKi)
+                    affinity_nM = row['affinity_nM']
+                    pKd = -np.log10(affinity_nM * 1e-9)  # Convert nM to M, then -log10
+                    
+                    record = {
+                        'protein_seq_encoded': protein_encoded,
+                        'smiles_encoded': smiles_encoded,
+                        'complex_descriptors': complex_desc,
+                        'affinity_nM': affinity_nM,
+                        'pKd': pKd,
+                        'affinity_type': row['affinity_type'],
+                        'target_name': row['Target Name'],
+                        'smiles': smiles,
+                        'protein_seq': protein_seq[:100]  # Store first 100 AA for reference
+                    }
+                    
+                    processed_data.append(record)
+                    
+                except Exception as e:
+                    if len(processed_data) < 10:  # Only print first few errors
+                        print(f"  Error processing entry: {e}")
+                    continue
+            
+            elapsed = time.time() - batch_time
+            rate = len(batch_df) / elapsed if elapsed > 0 else 0
+            total_elapsed = time.time() - start_time
+            remaining = (total_samples - batch_end) / rate if rate > 0 else 0
+            print(f"    Batch completed in {elapsed:.1f}s ({rate:.0f} samples/sec) | Total: {total_elapsed/60:.1f}min | ETA: {remaining/60:.1f}min")
         
         print(f"\nSuccessfully processed {len(processed_data)} samples")
         

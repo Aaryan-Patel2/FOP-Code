@@ -124,7 +124,7 @@ class ProteinCNN(nn.Module):
                 nn.Conv1d(in_channels, hidden_dim, kernel_size, padding=kernel_size//2),
                 nn.BatchNorm1d(hidden_dim),
                 nn.ReLU(),
-                nn.Dropout(0.3),
+                nn.Dropout(0.1),  # Reduced from 0.3 - less aggressive regularization
                 nn.MaxPool1d(2)
             ))
             in_channels = hidden_dim
@@ -182,7 +182,7 @@ class LigandCNN(nn.Module):
                 nn.Conv1d(in_channels, hidden_dim, kernel_size, padding=kernel_size//2),
                 nn.BatchNorm1d(hidden_dim),
                 nn.ReLU(),
-                nn.Dropout(0.3),
+                nn.Dropout(0.1),  # Reduced from 0.3 - less aggressive regularization
                 nn.MaxPool1d(2)
             ))
             in_channels = hidden_dim
@@ -351,13 +351,26 @@ class HybridBayesianAffinityNetwork(nn.Module):
             mean_prediction: Mean predicted affinity
             uncertainty: Standard deviation (epistemic uncertainty)
         """
-        self.train()  # Enable dropout and weight sampling
+        # Keep model in eval but enable dropout for MC sampling
+        was_training = self.training
+        self.eval()
+        
+        # Enable dropout layers only
+        for module in self.modules():
+            if isinstance(module, nn.Dropout):
+                module.train()
         
         predictions = []
         with torch.no_grad():
             for _ in range(n_samples):
                 pred = self.forward(protein_seq, ligand_smiles, complex_descriptors)
                 predictions.append(pred)
+        
+        # Restore original mode
+        if was_training:
+            self.train()
+        else:
+            self.eval()
         
         predictions = torch.stack(predictions)
         mean_pred = predictions.mean(dim=0)

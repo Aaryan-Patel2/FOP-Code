@@ -143,13 +143,17 @@ class BayesianAffinityTrainer(pl.LightningModule):
     """
     PyTorch Lightning Module for Bayesian Hybrid Affinity Network
     Refactored from manual training loop for cleaner, more maintainable code
+    
+    Includes KL annealing to gradually increase regularization
     """
     
     def __init__(self, model: HybridBayesianAffinityNetwork,
-                 learning_rate: float = 1e-3,
-                 kl_weight: float = 1.0,
+                 learning_rate: float = 5e-4,  # Reduced from 1e-3
+                 kl_weight: float = 0.00001,  # Much smaller: 0.00001 instead of 0.001
                  dataset_size: int = 1000,
-                 uncertainty_samples: int = 50):
+                 uncertainty_samples: int = 50,
+                 kl_annealing: bool = True,
+                 max_epochs: int = 50):
         super().__init__()
         
         # Save hyperparameters
@@ -157,13 +161,15 @@ class BayesianAffinityTrainer(pl.LightningModule):
         
         self.model = model
         self.learning_rate = learning_rate
-        self.kl_weight = kl_weight
+        self.kl_weight_final = kl_weight  # Final KL weight after annealing
         self.uncertainty_samples = uncertainty_samples
+        self.kl_annealing = kl_annealing
+        self.max_epochs = max_epochs
         
-        # Loss function
+        # Loss function (will update KL weight dynamically during training)
         self.loss_fn = BayesianAffinityLoss(
             dataset_size=dataset_size,
-            kl_weight=kl_weight
+            kl_weight=0.0 if kl_annealing else kl_weight  # Start at 0 if annealing
         )
         
         # Ensemble ML models (trained separately)
@@ -173,6 +179,24 @@ class BayesianAffinityTrainer(pl.LightningModule):
         self.validation_step_outputs = []
         self.test_step_outputs = []
     
+    def get_kl_weight(self) -> float:
+        """
+        Compute current KL weight with annealing
+        Gradually increases from 0 to kl_weight_final over first half of training
+        """
+        if not self.kl_annealing:
+            return self.kl_weight_final
+        
+        current_epoch = self.current_epoch
+        # Anneal over first 50% of epochs
+        anneal_epochs = self.max_epochs * 0.5
+        
+        if current_epoch >= anneal_epochs:
+            return self.kl_weight_final
+        else:
+            # Linear annealing from 0 to final weight
+            return self.kl_weight_final * (current_epoch / anneal_epochs)
+    
     def forward(self, protein_seq, ligand_smiles, complex_desc):
         """Forward pass"""
         return self.model(protein_seq, ligand_smiles, complex_desc)
@@ -180,6 +204,10 @@ class BayesianAffinityTrainer(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         """Training step - called automatically by Lightning"""
         protein_seq, ligand_smiles, complex_desc, target = batch
+        
+        # Update KL weight dynamically (for annealing)
+        current_kl_weight = self.get_kl_weight()
+        self.loss_fn.kl_weight = current_kl_weight
         
         # Forward pass
         predictions = self(protein_seq, ligand_smiles, complex_desc)
@@ -192,6 +220,7 @@ class BayesianAffinityTrainer(pl.LightningModule):
         self.log('train_loss', metrics['total_loss'], on_step=True, on_epoch=True, prog_bar=True)
         self.log('train_nll', metrics['nll'], on_step=False, on_epoch=True)
         self.log('train_kl', metrics['kl_divergence'], on_step=False, on_epoch=True)
+        self.log('kl_weight', current_kl_weight, on_step=False, on_epoch=True, prog_bar=True)
         
         return loss
     
@@ -310,25 +339,30 @@ class BayesianAffinityTrainer(pl.LightningModule):
         self.test_step_outputs.clear()
     
     def configure_optimizers(self):  # type: ignore
-        """Configure optimizer and scheduler - balanced regularization"""
-        # Reduced weight decay to prevent over-regularization
+        """Configure optimizer and scheduler with improved regularization"""
+        # AdamW with weight decay for L2 regularization
         optimizer = torch.optim.AdamW(
             self.parameters(), 
             lr=self.learning_rate,
-            weight_decay=1e-5  # Reduced from 1e-4 to allow model to learn patterns
+            weight_decay=1e-5,  # Reduced weight decay - was killing the model
+            betas=(0.9, 0.999),
+            eps=1e-8
         )
         
-        # Cosine annealing for smooth learning rate decay
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, 
-            T_max=10,  # Period of cosine cycle
-            eta_min=1e-5  # Minimum learning rate (not too low)
+        # ReduceLROnPlateau: reduce LR when validation loss plateaus
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,  # Reduce LR by 50%
+            patience=5,  # Wait 5 epochs before reducing
+            min_lr=1e-6  # Don't go below this
         )
         
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
+                'monitor': 'val_loss',  # Monitor validation loss
                 'interval': 'epoch',
                 'frequency': 1
             }
@@ -428,7 +462,14 @@ if __name__ == "__main__":
     }
     
     model = create_hnn_affinity_model(config)
-    lit_model = BayesianAffinityTrainer(model, learning_rate=1e-3, kl_weight=0.01, dataset_size=train_size)
+    lit_model = BayesianAffinityTrainer(
+        model, 
+        learning_rate=1e-3, 
+        kl_weight=0.001,  # Reduced KL weight
+        dataset_size=train_size,
+        kl_annealing=True,
+        max_epochs=5
+    )
     
     # Quick training test with Lightning
     print("\nRunning quick training test (5 epochs) with PyTorch Lightning...")

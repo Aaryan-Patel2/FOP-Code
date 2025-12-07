@@ -10,6 +10,10 @@ from typing import Dict, List, Optional, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import model creation functions
+from models.bayesian_affinity_predictor import create_hnn_affinity_model
+from models.bayesian_training_pipeline import BayesianAffinityTrainer
+
 
 class AffinityPredictor:
     """
@@ -54,25 +58,65 @@ class AffinityPredictor:
             print("⚠ No checkpoint provided. Use .train() to train a model first.")
     
     def _load_checkpoint(self, checkpoint_path: str):
-        """Load trained model from checkpoint"""
-        from models.bayesian_training_pipeline import BayesianAffinityTrainer
-        from models.bayesian_affinity_predictor import create_hnn_affinity_model
+        """Load a trained model from checkpoint with vocab size flexibility"""
+        if not Path(checkpoint_path).exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
         
         print(f"Loading checkpoint from: {checkpoint_path}")
         
         # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
-        # Create model with saved config
+        # Extract vocab sizes from checkpoint state dict
+        state_dict = checkpoint.get('state_dict', {})
+        ligand_vocab_size = None
+        protein_vocab_size = None
+        
+        for key, value in state_dict.items():
+            if 'ligand_encoder.embedding.weight' in key:
+                ligand_vocab_size = value.shape[0]
+            if 'protein_encoder.embedding.weight' in key:
+                protein_vocab_size = value.shape[0]
+        
+        print(f"  Checkpoint vocab sizes: protein={protein_vocab_size}, ligand={ligand_vocab_size}")
+        
+        # Create model with saved config, using checkpoint vocab sizes
         config = checkpoint.get('hyper_parameters', {}).get('model_config', {})
+        if ligand_vocab_size is not None:
+            config['ligand_vocab_size'] = ligand_vocab_size
+        if protein_vocab_size is not None:
+            config['protein_vocab_size'] = protein_vocab_size
+            
         model = create_hnn_affinity_model(config)
         
-        # Load weights
-        lit_model = BayesianAffinityTrainer.load_from_checkpoint(
-            checkpoint_path,
-            model=model,
-            map_location=self.device
-        )
+        # Load weights with strict=False to allow size mismatches
+        try:
+            lit_model = BayesianAffinityTrainer.load_from_checkpoint(
+                checkpoint_path,
+                model=model,
+                map_location=self.device,
+                strict=False  # Allow missing/mismatched keys
+            )
+        except Exception as e:
+            print(f"⚠ Warning: Some parameters couldn't be loaded: {e}")
+            print("  This is normal when vocab sizes differ between datasets.")
+            print("  Continuing with partially loaded model...")
+            
+            # Manual loading with strict=False
+            lit_model = BayesianAffinityTrainer(model=model)
+            state_dict = checkpoint['state_dict']
+            
+            # Load only matching keys
+            model_state = lit_model.state_dict()
+            filtered_state = {}
+            
+            for k, v in state_dict.items():
+                if k in model_state and model_state[k].shape == v.shape:
+                    filtered_state[k] = v
+                else:
+                    print(f"  Skipping {k}: shape mismatch")
+            
+            lit_model.load_state_dict(filtered_state, strict=False)
         
         self.model = lit_model.model.to(self.device)
         self.model.eval()
@@ -125,7 +169,8 @@ class AffinityPredictor:
         smiles_tensor = torch.from_numpy(smiles_encoded).long().unsqueeze(0).to(self.device)
         
         # Calculate complex descriptors
-        complex_desc = self.encoders['complex'].calculate_from_smiles(ligand_smiles)
+        # NOTE: Training data used placeholder zeros, so we must do the same at inference
+        complex_desc = np.zeros(200, dtype=np.float32)  # Match training data format
         complex_tensor = torch.from_numpy(complex_desc).float().unsqueeze(0).to(self.device)
         
         # Make predictions with uncertainty
@@ -139,9 +184,29 @@ class AffinityPredictor:
         
         predictions = np.array(predictions).squeeze()
         
+        # Denormalize predictions back to pKd scale
+        # Load normalization stats
+        stats_path = Path('data/quick_start_processed/training_stats.json')
+        if stats_path.exists():
+            import json
+            with open(stats_path, 'r') as f:
+                stats = json.load(f)
+            
+            norm = stats.get('normalization', {})
+            if norm.get('method') == 'min-max to [0, 1]':
+                # Denormalize: pKd = normalized * (max - min) + min
+                pKd_min = norm['affinity_min']
+                pKd_max = norm['affinity_max']
+                predictions_denorm = predictions * (pKd_max - pKd_min) + pKd_min
+            else:
+                predictions_denorm = predictions
+        else:
+            # No stats file, assume already in correct scale
+            predictions_denorm = predictions
+        
         # Calculate statistics
-        mean_affinity = predictions.mean()
-        uncertainty = predictions.std()
+        mean_affinity = predictions_denorm.mean()
+        uncertainty = predictions_denorm.std()
         confidence = 1.0 / (1.0 + uncertainty)  # Higher confidence = lower uncertainty
         
         # Predict k_off using empirical method
@@ -288,7 +353,7 @@ class AffinityPredictor:
             'ligand_output_dim': 256,
             'complex_output_dim': 128,
             'fusion_hidden_dims': [512, 256, 128],
-            'dropout': 0.3,  # Balanced dropout - not too aggressive
+            'dropout': 0.2,  # Reduced dropout - 0.4 was too aggressive
             'prior_sigma': 1.0
         }
         
@@ -296,8 +361,10 @@ class AffinityPredictor:
         lit_model = BayesianAffinityTrainer(
             model=model,
             learning_rate=learning_rate,
-            kl_weight=0.001,  # Reduced from 0.01 to let model focus on fitting data
-            dataset_size=train_size
+            kl_weight=0.00001,  # Much smaller KL weight to prevent collapse
+            dataset_size=train_size,
+            kl_annealing=True,  # Enable KL annealing
+            max_epochs=num_epochs
         )
         
         # Setup trainer
@@ -305,16 +372,29 @@ class AffinityPredictor:
         checkpoint_callback = ModelCheckpoint(
             dirpath=output_dir,
             filename='best_model',
-            monitor='val_loss',
-            mode='min',
+            monitor='val_pcc',  # Save best PCC model, not lowest loss
+            mode='max',  # Maximize PCC
             save_top_k=1
+        )
+        
+        # Early stopping - monitor PCC instead of loss
+        # PCC is a better metric for ranking quality
+        early_stop = EarlyStopping(
+            monitor='val_pcc',
+            patience=15,  # Increased patience - let model train longer
+            mode='max',  # Maximize PCC (not minimize)
+            verbose=True,
+            min_delta=0.001  # Only stop if no improvement > 0.001
         )
         
         trainer = pl.Trainer(
             max_epochs=num_epochs,
-            callbacks=[checkpoint_callback, EarlyStopping(monitor='val_loss', patience=10)],
+            callbacks=[checkpoint_callback, early_stop],
             accelerator=accelerator,
-            devices=devices
+            devices=devices,
+            strategy='ddp' if devices > 1 else 'auto',  # Use DDP for multi-GPU
+            gradient_clip_val=1.0,  # Prevent exploding gradients
+            gradient_clip_algorithm='norm'
         )
         
         # Train

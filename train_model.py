@@ -91,7 +91,9 @@ def train_model(args):
         num_epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.lr,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        accelerator=args.accelerator,
+        devices=args.devices
     )
     
     print(f"\n✅ Training complete!")
@@ -153,7 +155,7 @@ def main():
                         default='data/bindingdb_data/BindingDB_All.tsv',
                         help='Path to BindingDB TSV file')
     parser.add_argument('--target', type=str, default='ACVR1',
-                        help='Target protein name')
+                        help='Target protein name (use "None" for multi-target training on ALL targets)')
     
     # Training arguments
     parser.add_argument('--epochs', type=int, default=20,
@@ -162,6 +164,10 @@ def main():
                         help='Batch size for training')
     parser.add_argument('--lr', type=float, default=5e-4,
                         help='Learning rate (default: 5e-4 - balanced for convergence and stability)')
+    parser.add_argument('--devices', type=int, default=1,
+                        help='Number of GPUs to use (default: 1, use 2 for multi-GPU training)')
+    parser.add_argument('--accelerator', type=str, default='auto',
+                        help='Accelerator type (auto, cpu, gpu, tpu)')
     
     # Output arguments
     parser.add_argument('--output-dir', type=str, default='trained_models',
@@ -170,6 +176,10 @@ def main():
                         help='Skip exporting model to models/pretrained/')
     
     args = parser.parse_args()
+    
+    # Convert string "None" to Python None for multi-target training
+    if args.target == "None":
+        args.target = None
     
     print("\n🧬 ACVR1 Affinity Predictor - Training Pipeline")
     print("=" * 60)

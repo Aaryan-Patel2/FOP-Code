@@ -36,36 +36,52 @@ class AffinityDataPreparator:
         self.RT = 0.593  # kcal/mol at 298K (25°C)
         self.R = 1.987e-3  # kcal/(mol·K)
         
-    def load_bindingdb(self, target_name: Optional[str] = None) -> pd.DataFrame:
+    def load_bindingdb(self, target_name: Optional[str] = None, 
+                        max_rows: Optional[int] = None) -> pd.DataFrame:
         """
-        Load and filter BindingDB data
+        Load and filter BindingDB data - NOW LOADS ALL TARGETS by default!
         
         Args:
-            target_name: Filter by target name (e.g., 'ACVR1', 'ALK2')
+            target_name: Optional - Filter by target name (e.g., 'ACVR1'). 
+                        If None, loads ALL targets with valid data.
+            max_rows: Optional - Limit rows for testing (None = all data)
         """
         assert self.bindingdb_path is not None, "bindingdb_path must be provided"
         
         print(f"Loading BindingDB from {self.bindingdb_path}...")
+        if max_rows:
+            print(f"  (Limited to {max_rows:,} rows for testing)")
         
-        # Load with specific columns
-        usecols = ['Ligand SMILES', 'Target Name', 'Ki (nM)', 'IC50 (nM)', 
-                   'Kd (nM)', 'EC50 (nM)', 'kon (M-1-s-1)', 'koff (s-1)',
+        # Load with specific columns INCLUDING protein sequence
+        usecols = ['Ligand SMILES', 'Target Name', 
+                   'BindingDB Target Chain Sequence',  # Protein sequence!
+                   'Ki (nM)', 'IC50 (nM)', 'Kd (nM)', 'EC50 (nM)', 
+                   'kon (M-1-s-1)', 'koff (s-1)',
                    'pH', 'Temp (C)', 'PDB ID(s) for Ligand-Target Complex']
         
-        self.data = pd.read_csv(self.bindingdb_path, sep='\t', 
-                                usecols=usecols, low_memory=False)
+        self.data = pd.read_csv(self.bindingdb_path, sep='	', 
+                                usecols=usecols, low_memory=False,
+                                nrows=max_rows)
         
-        print(f"Loaded {len(self.data)} entries from BindingDB")
+        print(f"Loaded {len(self.data):,} entries from BindingDB")
         
-        # Filter by target if specified
+        # Filter by target ONLY if specified (otherwise use ALL targets!)
         if target_name:
             self.data = self.data[self.data['Target Name'].str.contains(
                 target_name, case=False, na=False)]
-            print(f"Filtered to {len(self.data)} entries for target: {target_name}")
+            print(f"Filtered to {len(self.data):,} entries for target: {target_name}")
+        else:
+            print(f"Using ALL targets (multi-target training for better generalization!)")
         
         # Remove entries without SMILES
+        initial_count = len(self.data)
         self.data = self.data.dropna(subset=['Ligand SMILES'])
-        print(f"Retained {len(self.data)} entries with valid SMILES")
+        print(f"Retained {len(self.data):,} entries with valid SMILES ({len(self.data)/initial_count*100:.1f}%)")
+        
+        # Remove entries without protein sequence
+        initial_count = len(self.data)
+        self.data = self.data.dropna(subset=['BindingDB Target Chain Sequence'])
+        print(f"Retained {len(self.data):,} entries with protein sequences ({len(self.data)/initial_count*100:.1f}%)")
         
         return self.data
     
@@ -213,21 +229,24 @@ class AffinityDataPreparator:
     def prepare_dataset(self, output_dir: str = 'data/processed_affinity',
                         target_name: Optional[str] = None,
                         min_affinity: Optional[float] = None,
-                        max_affinity: Optional[float] = None) -> pd.DataFrame:
+                        max_affinity: Optional[float] = None,
+                        max_rows: Optional[int] = None) -> pd.DataFrame:
         """
         Prepare complete dataset with affinity annotations and molecular features
+        NOW USES ALL TARGETS by default for better generalization!
         
         Args:
             output_dir: Directory to save processed data
-            target_name: Filter by specific target
-            min_affinity: Minimum affinity threshold in nM (more selective)
-            max_affinity: Maximum affinity threshold in nM (less selective)
+            target_name: Optional - Filter by specific target (None = ALL targets)
+            min_affinity: Minimum affinity threshold in nM (default: None = no filter)
+            max_affinity: Maximum affinity threshold in nM (default: None = no filter)
+            max_rows: Optional - Limit input rows for testing
         
         Returns:
             Processed DataFrame
         """
         if self.data is None:
-            self.load_bindingdb(target_name=target_name)
+            self.load_bindingdb(target_name=target_name, max_rows=max_rows)
         
         assert self.data is not None, "Data must be loaded before processing"
         
@@ -272,9 +291,15 @@ class AffinityDataPreparator:
             if fingerprint is None:
                 continue
             
+            # Get protein sequence
+            protein_seq = row.get('BindingDB Target Chain Sequence', '')
+            if pd.isna(protein_seq) or len(str(protein_seq).strip()) < 10:
+                continue  # Skip if no valid sequence
+            
             # Compile record
             record = {
                 'smiles': smiles,
+                'protein_sequence': str(protein_seq),
                 'target': row['Target Name'],
                 'affinity_nM': affinity_nm,
                 'affinity_type': metric_type,
