@@ -1,0 +1,42 @@
+[
+  {
+    "smiles": "CC1CCCC1.CCC1CC2CC(C)C3NCNC(C1)N23",
+    "mol_weight": 293.49899999999997,
+    "qed": 0.7744489346803386,
+    "logp": 3.5158000000000023,
+    "predicted_affinity": 5.625973701477051,
+    "affinity_uncertainty": 0.0,
+    "predicted_koff": 1.5382012128829956,
+    "residence_time": 0.6501100063323975
+  },
+  {
+    "smiles": "C1CSC1.CCO.I",
+    "mol_weight": 248.12900000000002,
+    "qed": 0.6587821518131959,
+    "logp": 1.7399000000000004,
+    "predicted_affinity": 5.586856842041016,
+    "affinity_uncertainty": 0.0,
+    "predicted_koff": 1.6090575456619263,
+    "residence_time": 0.6214818358421326
+  },
+  {
+    "smiles": "CC.CCC(C)NCC(O)C(O)CC.O.O",
+    "mol_weight": 241.37199999999999,
+    "qed": 0.6018059644017512,
+    "logp": -0.11690000000000067,
+    "predicted_affinity": 5.483213901519775,
+    "affinity_uncertainty": 4.76837158203125e-07,
+    "predicted_koff": 1.8129801750183105,
+    "residence_time": 0.5515779852867126
+  },
+  {
+    "smiles": "NC(O)C(=O)CC1CCC(CCC(=O)O)CC1",
+    "mol_weight": 243.30299999999997,
+    "qed": 0.6014725260009554,
+    "logp": 0.8938999999999993,
+    "predicted_affinity": 5.28237771987915,
+    "affinity_uncertainty": 1.430511474609375e-06,
+    "predicted_koff": 2.284605026245117,
+    "residence_time": 0.4377124309539795
+  }
+]

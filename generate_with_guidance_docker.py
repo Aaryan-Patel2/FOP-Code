@@ -27,6 +27,38 @@ from lightning_modules import LigandPocketDDPM
 from quick_start import AffinityPredictor
 
 
+def extract_ligand_coords_from_pdb(ligand_pdb_path: str):
+    """
+    Extract ligand atom coordinates from a PDB file
+    
+    Args:
+        ligand_pdb_path: Path to PDB file containing the reference ligand
+    
+    Returns:
+        torch.Tensor of shape (N_atoms, 3) with coordinates, or None if not found
+    """
+    try:
+        from Bio.PDB import PDBParser
+        import torch
+        
+        parser = PDBParser(QUIET=True)
+        struct = parser.get_structure('ligand', ligand_pdb_path)
+        
+        coords = []
+        for model in struct:
+            for chain in model:
+                for residue in chain:
+                    for atom in residue:
+                        coords.append(atom.get_coord())
+        
+        if coords:
+            return torch.tensor(coords, dtype=torch.float32)
+        return None
+    except Exception as e:
+        print(f"   Warning: Could not extract ligand coordinates from {ligand_pdb_path}: {e}")
+        return None
+
+
 class GuidedGCDMGenerator:
     """
     GCDM molecule generation with Docker backend and affinity guidance
@@ -84,6 +116,7 @@ class GuidedGCDMGenerator:
         protein_sequence: str,
         resi_list: Optional[List[str]] = None,
         ref_ligand: Optional[str] = None,
+        ref_ligand_pdb: Optional[str] = None,
         n_samples: int = 50,
         top_k: int = 10,
         min_qed: float = 0.3,
@@ -97,7 +130,8 @@ class GuidedGCDMGenerator:
             pdb_file: Path to protein PDB file
             protein_sequence: Protein sequence for affinity prediction
             resi_list: List of residue IDs defining pocket (e.g., ["A:1", "A:2"])
-            ref_ligand: Reference ligand in format "chain:resi"
+            ref_ligand: Reference ligand in format "chain:resi" (e.g., "A:300")
+            ref_ligand_pdb: Path to PDB file containing reference ligand (alternative to ref_ligand)
             n_samples: Number of molecules to generate
             top_k: Return top K molecules by predicted affinity
             min_qed: Minimum QED score filter
@@ -107,16 +141,37 @@ class GuidedGCDMGenerator:
         Returns:
             List of top K molecules with predictions, sorted by affinity
         """
+        # Extract ligand info from PDB if provided
+        ligand_coords = None
+        if ref_ligand_pdb:
+            print(f"\n🔍 Extracting reference ligand coordinates from: {ref_ligand_pdb}")
+            ligand_coords = extract_ligand_coords_from_pdb(ref_ligand_pdb)
+            if ligand_coords is not None:
+                print(f"   ✓ Loaded {ligand_coords.shape[0]} ligand atoms")
+            else:
+                print("   ⚠️  Warning: Could not extract ligand coordinates")
+        
         print(f"\n{'='*70}")
         print("GENERATION & RANKING PIPELINE")
         print(f"{'='*70}")
         
-        # Step 1: Generate molecules using direct GCDM
+        # Step 1: Generate molecules using direct GCDM (in batches to avoid OOM)
         print(f"\n[1/3] Generating {n_samples} molecules via GCDM...")
-        molecules = self.gcdm_model.generate_ligands(
-            pdb_file, n_samples, resi_list, ref_ligand,
-            sanitize=sanitize
-        )
+        batch_size = 100  # Process 100 molecules at a time to avoid OOM
+        molecules = []
+        n_batches = (n_samples + batch_size - 1) // batch_size
+        
+        for i in range(n_batches):
+            batch_n = min(batch_size, n_samples - i * batch_size)
+            print(f"   Batch {i+1}/{n_batches}: generating {batch_n} molecules...")
+            batch_molecules = self.gcdm_model.generate_ligands(
+                pdb_file, batch_n, resi_list, ref_ligand,
+                ligand_coords=ligand_coords, sanitize=sanitize
+            )
+            molecules.extend(batch_molecules)
+            print(f"   ✓ Batch {i+1} complete ({len(molecules)} total)")
+        
+        print(f"✓ Generated {len(molecules)} molecules total")
         
         # Convert to dict format expected by the rest of the code
         molecules_dict = []
@@ -269,10 +324,11 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Generate molecules with Direct GCDM + Affinity Guidance")
-    parser.add_argument("--pdb", required=True, help="Path to PDB file")
-    parser.add_argument("--sequence", required=True, help="Protein sequence")
+    parser.add_argument("--pdb", required=True, help="Path to protein PDB file")
+    parser.add_argument("--sequence", required=True, help="Protein sequence for affinity prediction")
     parser.add_argument("--resi-list", nargs="+", help="Pocket residue IDs (e.g., A:1 A:2 A:3)")
-    parser.add_argument("--ref-ligand", help="Reference ligand (chain:resi)")
+    parser.add_argument("--ref-ligand", help="Reference ligand in format chain:resi (e.g., A:300)")
+    parser.add_argument("--ref-ligand-pdb", help="Path to PDB file containing reference ligand (alternative to --ref-ligand)")
     parser.add_argument("--affinity-checkpoint", default="trained_models/best_model.ckpt")
     parser.add_argument("--n-samples", type=int, default=50)
     parser.add_argument("--top-k", type=int, default=10)
@@ -292,6 +348,7 @@ def main():
         protein_sequence=args.sequence,
         resi_list=args.resi_list,
         ref_ligand=args.ref_ligand,
+        ref_ligand_pdb=args.ref_ligand_pdb,
         n_samples=args.n_samples,
         top_k=args.top_k
     )

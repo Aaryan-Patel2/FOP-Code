@@ -708,7 +708,7 @@ class LigandPocketDDPM(pl.LightningModule):
         visualize_chain(str(outdir), self.dataset_info, wandb=wandb)
 
     def generate_ligands(self, pdb_file, n_samples, pocket_ids=None,
-                         ref_ligand=None, num_nodes_lig=None, sanitize=False,
+                         ref_ligand=None, ligand_coords=None, num_nodes_lig=None, sanitize=False,
                          largest_frag=False, relax_iter=0, sample_chain=False,
                          timesteps=None, **kwargs):
         """
@@ -719,6 +719,7 @@ class LigandPocketDDPM(pl.LightningModule):
             pocket_ids: list of pocket residues in <chain>:<resi> format
             ref_ligand: alternative way of defining the pocket based on a
                 reference ligand given in <chain>:<resi> format
+            ligand_coords: torch.Tensor of ligand atom coordinates (alternative to ref_ligand)
             num_nodes_lig: number of ligand nodes for each sample (list of
                 integers), sampled randomly if 'None'
             sanitize: whether to sanitize molecules or not
@@ -733,7 +734,7 @@ class LigandPocketDDPM(pl.LightningModule):
         if sample_chain:
             assert n_samples == 1, 'Chain sampling is only supported for single-molecule batches.'
 
-        assert (pocket_ids is None) ^ (ref_ligand is None)
+        assert (pocket_ids is None) ^ (ref_ligand is None) ^ (ligand_coords is not None)
 
         # Load PDB
         pdb_struct = PDBParser(QUIET=True).get_structure('', pdb_file)[0]
@@ -742,6 +743,10 @@ class LigandPocketDDPM(pl.LightningModule):
             residues = [
                 pdb_struct[x.split(':')[0]][(' ', int(x.split(':')[1]), ' ')]
                 for x in pocket_ids]
+
+        elif ligand_coords is not None:
+            # define pocket with provided ligand coordinates
+            residues = utils.get_pocket_from_ligand(pdb_struct, ligand_coords=ligand_coords)
 
         else:
             # define pocket with reference ligand

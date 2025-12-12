@@ -98,19 +98,45 @@ def residues_to_atoms(x_ca, dataset_info):
 
 def get_residue_with_resi(pdb_chain, resi):
     res = [x for x in pdb_chain.get_residues() if x.id[1] == resi]
-    assert len(res) == 1
+    if len(res) == 0:
+        # Try to find heteroatoms - check all residues
+        all_res = list(pdb_chain.get_residues())
+        print(f"Available residues in chain {pdb_chain.id}:")
+        for r in all_res[:10]:  # Show first 10
+            print(f"  {r.id} - {r.resname}")
+        res = [x for x in all_res if str(x.id[1]) == str(resi)]
+    if len(res) == 0:
+        raise ValueError(f"No residue found with ID {resi} in chain {pdb_chain.id}")
+    # Return first matching residue
     return res[0]
 
 
-def get_pocket_from_ligand(pdb_model, ligand_id, dist_cutoff=8.0):
-    chain, resi = ligand_id.split(':')
-    ligand = get_residue_with_resi(pdb_model[chain], int(resi))
-    ligand_coords = torch.from_numpy(
-        np.array([a.get_coord() for a in ligand.get_atoms()]))
+def get_pocket_from_ligand(pdb_model, ligand_id=None, ligand_coords=None, dist_cutoff=8.0):
+    """
+    Get pocket residues within distance cutoff of ligand
+
+    Args:
+        pdb_model: Bio.PDB structure
+        ligand_id: String like "A:501" for ligand residue in pdb_model
+        ligand_coords: torch.Tensor of ligand atom coordinates (alternative to ligand_id)
+        dist_cutoff: Distance cutoff in Angstroms
+    """
+    if ligand_coords is None and ligand_id is not None:
+        # Original behavior: find ligand in pdb_model
+        chain, resi = ligand_id.split(':')
+        ligand = get_residue_with_resi(pdb_model[chain], int(resi))
+        ligand_coords = torch.from_numpy(
+            np.array([a.get_coord() for a in ligand.get_atoms()]))
+        skip_resi = int(resi)  # Skip the ligand residue itself
+    elif ligand_coords is not None:
+        # New behavior: use provided coordinates
+        skip_resi = None  # Don't skip any residue
+    else:
+        raise ValueError("Either ligand_id or ligand_coords must be provided")
 
     pocket_residues = []
     for residue in pdb_model.get_residues():
-        if residue.id[1] == resi:
+        if skip_resi is not None and residue.id[1] == skip_resi:
             continue  # skip ligand itself
 
         res_coords = torch.from_numpy(
@@ -119,6 +145,7 @@ def get_pocket_from_ligand(pdb_model, ligand_id, dist_cutoff=8.0):
                 and torch.cdist(res_coords, ligand_coords).min() < dist_cutoff:
             pocket_residues.append(residue)
 
+    print(f"Found {len(pocket_residues)} residues in pocket")
     return pocket_residues
 
 
