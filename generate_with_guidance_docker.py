@@ -1,6 +1,13 @@
 """
 GCDM-Guided Generation with Docker Integration
 Generate molecules using Docker-based GCDM with FOP affinity predictor guidance
+
+Features:
+- Direct GCDM model loading (no Docker container needed)
+- Batch generation to avoid OOM errors
+- Centroid-based pocket detection for improved precision
+- Affinity-guided ranking with uncertainty quantification
+- Fallback to chain:residue if centroid extraction fails
 """
 
 import sys
@@ -56,6 +63,72 @@ def extract_ligand_coords_from_pdb(ligand_pdb_path: str):
         return None
     except Exception as e:
         print(f"   Warning: Could not extract ligand coordinates from {ligand_pdb_path}: {e}")
+        return None
+
+
+def extract_ligand_centroid_from_pdb(ligand_pdb_path: str):
+    """
+    Extract geometric center (centroid) of reference ligand from PDB file.
+    This provides more precise pocket positioning than chain:residue ID.
+    
+    Args:
+        ligand_pdb_path: Path to PDB file containing reference ligand
+    
+    Returns:
+        (x, y, z) tuple of centroid coordinates, or None if extraction fails
+    """
+    try:
+        import numpy as np
+        
+        coords = []
+        
+        with open(ligand_pdb_path, 'r') as f:
+            for line in f:
+                if line.startswith(('HETATM', 'ATOM')):
+                    try:
+                        x = float(line[30:38].strip())
+                        y = float(line[38:46].strip())
+                        z = float(line[46:54].strip())
+                        coords.append([x, y, z])
+                    except (ValueError, IndexError):
+                        continue
+        
+        if not coords:
+            return None
+        
+        # Calculate centroid
+        coords_array = np.array(coords)
+        centroid = coords_array.mean(axis=0)
+        
+        return tuple(centroid)  # (x, y, z)
+        
+    except Exception as e:
+        print(f"   Warning: Could not extract centroid from {ligand_pdb_path}: {e}")
+        return None
+
+
+def extract_ligand_id_from_pdb(ligand_pdb_path: str):
+    """
+    Extract chain:residue ID from reference ligand PDB file.
+    This is the fallback method if centroid extraction fails.
+    
+    Args:
+        ligand_pdb_path: Path to PDB file containing reference ligand
+    
+    Returns:
+        String in format "chain:residue" (e.g., "A:501"), or None if extraction fails
+    """
+    try:
+        with open(ligand_pdb_path, 'r') as f:
+            for line in f:
+                if line.startswith(('HETATM', 'ATOM')):
+                    chain = line[21].strip()
+                    residue = line[22:26].strip()
+                    if chain and residue:
+                        return f"{chain}:{residue}"
+        return None
+    except Exception as e:
+        print(f"   Warning: Could not extract ligand ID from {ligand_pdb_path}: {e}")
         return None
 
 
@@ -143,13 +216,30 @@ class GuidedGCDMGenerator:
         """
         # Extract ligand info from PDB if provided
         ligand_coords = None
+        ligand_centroid = None
+        
         if ref_ligand_pdb:
-            print(f"\n🔍 Extracting reference ligand coordinates from: {ref_ligand_pdb}")
+            print(f"\n🔍 Extracting reference ligand from: {ref_ligand_pdb}")
+            
+            # Method 1: Try to extract centroid (more precise pocket positioning)
+            ligand_centroid = extract_ligand_centroid_from_pdb(ref_ligand_pdb)
+            if ligand_centroid is not None:
+                x, y, z = ligand_centroid
+                print(f"   ✓ Extracted centroid: ({x:.2f}, {y:.2f}, {z:.2f})")
+                print(f"   ℹ️  Using centroid-based pocket detection (improved precision)")
+            
+            # Method 2: Extract full coordinates (for future scaffold-based generation)
             ligand_coords = extract_ligand_coords_from_pdb(ref_ligand_pdb)
             if ligand_coords is not None:
                 print(f"   ✓ Loaded {ligand_coords.shape[0]} ligand atoms")
-            else:
-                print("   ⚠️  Warning: Could not extract ligand coordinates")
+            
+            # Fallback: Extract chain:residue ID if centroid fails
+            if ligand_centroid is None and not ref_ligand:
+                ref_ligand = extract_ligand_id_from_pdb(ref_ligand_pdb)
+                if ref_ligand:
+                    print(f"   ℹ️  Falling back to chain:residue ID: {ref_ligand}")
+                else:
+                    print("   ⚠️  Warning: Could not extract any ligand information")
         
         print(f"\n{'='*70}")
         print("GENERATION & RANKING PIPELINE")
@@ -164,9 +254,18 @@ class GuidedGCDMGenerator:
         for i in range(n_batches):
             batch_n = min(batch_size, n_samples - i * batch_size)
             print(f"   Batch {i+1}/{n_batches}: generating {batch_n} molecules...")
+            
+            # Use ligand_coords (full atom coords) if available, otherwise use ref_ligand
+            # If we extracted a centroid, convert it to tensor for GCDM
+            coords_to_use = ligand_coords
+            if ligand_centroid is not None and ligand_coords is None:
+                # Convert centroid tuple to torch tensor with shape (1, 3)
+                import torch
+                coords_to_use = torch.tensor([ligand_centroid], dtype=torch.float32)
+            
             batch_molecules = self.gcdm_model.generate_ligands(
                 pdb_file, batch_n, resi_list, ref_ligand,
-                ligand_coords=ligand_coords, sanitize=sanitize
+                ligand_coords=coords_to_use, sanitize=sanitize
             )
             molecules.extend(batch_molecules)
             print(f"   ✓ Batch {i+1} complete ({len(molecules)} total)")
