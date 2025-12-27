@@ -1,9 +1,0 @@
-{
-  "training_method": "transfer_learning",
-  "pretrain_epochs": 20,
-  "finetune_epochs": 30,
-  "target": "kinase",
-  "pretrain_lr": 0.0005,
-  "finetune_lr": 0.0002,
-  "final_checkpoint": "/home/aaryan0302/FOP-Code/trained_models/best_model.ckpt"
-}

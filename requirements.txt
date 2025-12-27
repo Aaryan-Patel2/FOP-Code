@@ -31,3 +31,11 @@ imageio>=2.9.0
 # GCDM Dependencies (install via conda for openbabel)
 # openbabel  # Install via: conda install -c conda-forge openbabel
 # Note: openbabel requires C++ libraries, use conda instead of pip
+
+## Manually-installed / pip-installable extras
+meeko==0.7.1
+hydra-core==1.3.2
+rdkit-pypi
+torchmetrics>=0.11.4
+
+# QuickVina/AutoDock Vina: download binary separately (see setup script)

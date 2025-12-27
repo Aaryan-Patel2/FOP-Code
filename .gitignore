@@ -43,8 +43,14 @@ venv.bak/
 # Data, models, and results
 # Large datasets (download separately)
 data/bindingdb_data/BindingDB_All.tsv
+scripts/
 data/bindingdb_data/*.zip
 data/bindingdb_data/*.tar.gz
+/docking_results_batch
+data/pdbbind_work/
+data/pdbbind_work/P-L/
+docking/
+*.tex
 
 # Processed data output directories
 data/quick_start_processed/

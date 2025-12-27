@@ -1,0 +1,18 @@
+{
+  "generation": {
+    "total_generated": 3524,
+    "total_valid": 3524,
+    "success_rate": 70.48,
+    "duration_seconds": 12543.098494,
+    "molecules_per_second": 0.2809513137193101
+  },
+  "scores": {
+    "mean_total_score": 0.5183752193893096,
+    "max_total_score": 0.965545787464078,
+    "mean_pkd": 5.523336279947019,
+    "max_pkd": 7.53908634185791,
+    "mean_koff": 1.896390676498413,
+    "mean_sa": 4.268701340356703
+  },
+  "pareto_optimal_count": 100
+}
